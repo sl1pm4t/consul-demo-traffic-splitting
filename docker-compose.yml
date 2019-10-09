@@ -1,11 +1,16 @@
 version: "3.3"
 services:
-
   consul:
     build:
       context: .
       dockerfile: Dockerfile-consul
-    command: ["consul","agent","-config-file=/config/consul.hcl","-config-dir=/config"]
+    command:
+      [
+        "consul",
+        "agent",
+        "-config-file=/config/consul.hcl",
+        "-config-dir=/config",
+      ]
     volumes:
       - "./consul_config:/config"
     ports:
@@ -13,6 +18,8 @@ services:
     networks:
       vpcbr:
         ipv4_address: 10.5.0.2
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8500/v1/agent/services"]
 
   # Define web service and envoy sidecar proxy
   web:
@@ -36,7 +43,7 @@ services:
       SERVICE_CONFIG: /config/web.json
     volumes:
       - "./service_config:/config"
-    command: ["consul", "connect", "envoy","-sidecar-for", "web-v1"]
+    command: ["consul", "connect", "envoy", "-sidecar-for", "web-v1"]
     network_mode: "service:web"
 
   # Define api service and envoy sidecar proxy for version 1 of the service
@@ -56,12 +63,48 @@ services:
       SERVICE_CONFIG: /config/api_v1.json
     volumes:
       - "./service_config:/config"
-    command: ["consul", "connect", "envoy","-sidecar-for", "api-v1"]
+    command: ["consul", "connect", "envoy", "-sidecar-for", "api-v1"]
     network_mode: "service:api_v1"
+
+  edge_consul:
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile-consul
+    # image: consul:1.5.3
+    image: consul:1.6.1
+    command:
+      ["consul", "agent", "-config-dir=/config", "-retry-join", "10.5.0.2"]
+    volumes:
+      - "./edge_config/consul:/config"
+    ports:
+      # Need to publish envoy ports here because it's sharing this containers network namespace
+      - 80:80
+      - 443:443
+      - 19000:19000
+    networks:
+      vpcbr:
+        ipv4_address: 10.5.0.5
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8500/v1/agent/services"]
+    depends_on:
+      - consul
+
+  edge_envoy:
+    build:
+      context: .
+      dockerfile: Dockerfile-edge-envoy
+    environment:
+      ENVOY_LOG_LEVEL: debug
+    volumes:
+      - "./edge_config/envoy:/config"
+    # use edge_consul network namespace
+    network_mode: service:edge_consul
+    depends_on:
+      - edge_consul
 
 networks:
   vpcbr:
     driver: bridge
     ipam:
-     config:
-       - subnet: 10.5.0.0/16
+      config:
+        - subnet: 10.5.0.0/16
